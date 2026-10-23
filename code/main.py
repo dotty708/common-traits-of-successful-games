@@ -32,7 +32,7 @@ st.write("연구 질문: 인기 있는 게임은 정말 공통적인 특성을 �
 # 1. 데이터 불러오기
 # --------------------------------------------------
 
-url = "https://raw.githubusercontent.com/greatsong/ds-sample-1-regression/refs/heads/main/data/eafc25_players.csv"
+url = "https://raw.githubusercontent.com/dotty708/common-traits-of-successful-games/refs/heads/main/data/games_march2025_popularity_reduced.csv"
 
 df = pd.read_csv(url, encoding="utf-8")
 
