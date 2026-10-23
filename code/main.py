@@ -15,7 +15,7 @@ st.write("연구 질문: 인기 있는 게임은 정말 공통적인 특성을 �
 # 1. 데이터 불러오기
 # --------------------------------------------------
 
-url = "import streamlit as st
+url = "import streamlit as st"
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
