@@ -4,14 +4,13 @@ import numpy as np
 
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import silhouette_score
 
 st.set_page_config(
     page_title="Steam 게임 K-Means 분석",
     layout="wide"
 )
 
-st.title("Steam 게임 인기 특성 군집 분석")
+st.title("Steam 게임 K-Means 군집 분석")
 st.write("연구 질문: 인기 있는 게임은 정말 공통적인 특성을 가지고 있는가?")
 
 
@@ -27,38 +26,32 @@ def load_data():
     return pd.read_csv(url, encoding="utf-8")
 
 
-df = load_data()
+with st.spinner("데이터 불러오는 중..."):
+    df = load_data()
 
 
-st.header("1. 데이터 기본 정보")
+st.success("데이터를 정상적으로 불러왔습니다.")
 
 col1, col2 = st.columns(2)
 
 col1.metric("게임 수", f"{len(df):,}")
 col2.metric("열 수", len(df.columns))
 
-st.dataframe(
-    df.head(10),
-    use_container_width=True
-)
+st.subheader("원본 데이터")
+st.dataframe(df.head(10), use_container_width=True)
 
 
 # ==================================================
-# 2. estimated_owners 숫자로 변환
+# 2. estimated_owners 변환
 # ==================================================
 
-st.header("2. 데이터 전처리")
-
-
-def owner_midpoint(value):
-
+def convert_owners(value):
     try:
-        text = str(value).replace(",", "")
+        value = str(value).replace(",", "")
+        parts = value.split("-")
 
-        parts = text.split("-")
-
-        minimum = int(parts[0].strip())
-        maximum = int(parts[1].strip())
+        minimum = float(parts[0].strip())
+        maximum = float(parts[1].strip())
 
         return (minimum + maximum) / 2
 
@@ -66,14 +59,13 @@ def owner_midpoint(value):
         return np.nan
 
 
-df["owners_midpoint"] = df["estimated_owners"].apply(
-    owner_midpoint
-)
+df["owners_midpoint"] = df["estimated_owners"].apply(convert_owners)
 
+
+st.header("1. estimated_owners 변환")
 
 st.write(
-    "estimated_owners의 범위에서 최솟값과 최댓값의 "
-    "중앙값을 계산해 owners_midpoint를 만들었습니다."
+    "estimated_owners의 범위에서 최솟값과 최댓값의 중앙값을 계산했습니다."
 )
 
 st.dataframe(
@@ -89,10 +81,10 @@ st.dataframe(
 
 
 # ==================================================
-# 3. 군집에 사용할 특성
+# 3. K-Means에 사용할 변수
 # ==================================================
 
-st.header("3. K-Means에 사용할 특성")
+st.header("2. 군집화에 사용할 변수")
 
 features = [
     "price",
@@ -100,56 +92,41 @@ features = [
     "peak_ccu",
     "num_reviews_total",
     "pct_pos_total",
-    "average_playtime_forever",
-    "metacritic_score"
+    "average_playtime_forever"
 ]
 
-st.write(features)
+st.write("""
+이번 1차 군집화에서는 다음 6개 변수를 사용합니다.
+
+- 가격
+- 추정 소유자 수
+- 최대 동시 접속자 수
+- 전체 리뷰 수
+- 긍정 평가 비율
+- 평균 플레이타임
+""")
 
 
-# 숫자로 변환
+# ==================================================
+# 4. 전처리
+# ==================================================
+
+X = df[features].copy()
+
 for column in features:
-
-    df[column] = pd.to_numeric(
-        df[column],
+    X[column] = pd.to_numeric(
+        X[column],
         errors="coerce"
     )
 
-
-# 메타크리틱 0점은 실제 0점보다
-# 정보 없음일 가능성이 높으므로 결측 처리
-df["metacritic_score"] = df[
-    "metacritic_score"
-].replace(0, np.nan)
-
-
-# ==================================================
-# 4. 결측치 처리
-# ==================================================
-
-cluster_df = df[features].copy()
-
+# 결측치를 중앙값으로 처리
 for column in features:
-
-    cluster_df[column] = cluster_df[
-        column
-    ].fillna(
-        cluster_df[column].median()
+    X[column] = X[column].fillna(
+        X[column].median()
     )
 
 
-st.write(
-    "K-Means는 결측치를 처리할 수 없기 때문에 "
-    "각 열의 결측치를 중앙값으로 채웠습니다."
-)
-
-
-# ==================================================
-# 5. 로그 변환
-# ==================================================
-
-st.header("4. 데이터 스케일 조정")
-
+# 값의 차이가 매우 큰 변수 로그 변환
 log_columns = [
     "price",
     "owners_midpoint",
@@ -159,39 +136,35 @@ log_columns = [
 ]
 
 for column in log_columns:
-
-    cluster_df[column] = np.log1p(
-        cluster_df[column].clip(lower=0)
+    X[column] = np.log1p(
+        X[column].clip(lower=0)
     )
 
 
-st.write(
-    "소수의 초대형 게임이 K-Means 결과를 지배하지 않도록 "
-    "가격, 소유자 수, 동시 접속자 수, 리뷰 수, 플레이타임에 "
-    "log(1+x) 변환을 적용했습니다."
-)
-
-
-# ==================================================
-# 6. 표준화
-# ==================================================
-
+# 표준화
 scaler = StandardScaler()
 
-X = scaler.fit_transform(
-    cluster_df
+X_scaled = scaler.fit_transform(X)
+
+
+st.success("전처리가 완료되었습니다.")
+
+
+# ==================================================
+# 5. K-Means
+# ==================================================
+
+st.header("3. K-Means 실행")
+
+k = st.slider(
+    "군집 개수 K",
+    min_value=2,
+    max_value=6,
+    value=3
 )
 
 
-# ==================================================
-# 7. 적절한 K 확인
-# ==================================================
-
-st.header("5. 군집 개수 K 확인")
-
-scores = []
-
-for k in range(2, 7):
+with st.spinner("K-Means 계산 중..."):
 
     model = KMeans(
         n_clusters=k,
@@ -199,121 +172,59 @@ for k in range(2, 7):
         n_init=10
     )
 
-    labels = model.fit_predict(X)
-
-    score = silhouette_score(
-        X,
-        labels
+    df["cluster"] = model.fit_predict(
+        X_scaled
     )
 
-    scores.append({
-        "K": k,
-        "실루엣 점수": round(score, 4)
-    })
 
-
-score_df = pd.DataFrame(scores)
-
-st.dataframe(
-    score_df,
-    use_container_width=True,
-    hide_index=True
-)
-
-
-best_k = int(
-    score_df.loc[
-        score_df["실루엣 점수"].idxmax(),
-        "K"
-    ]
-)
-
-st.success(
-    f"실루엣 점수가 가장 높은 군집 수는 K = {best_k} 입니다."
-)
+st.success(f"K={k} 군집화가 완료되었습니다.")
 
 
 # ==================================================
-# 8. K-Means 실행
+# 6. 군집 크기
 # ==================================================
 
-st.header("6. K-Means 군집화")
+st.header("4. 군집별 게임 수")
 
-selected_k = st.slider(
-    "군집 개수(K)",
-    min_value=2,
-    max_value=6,
-    value=best_k
-)
-
-
-kmeans = KMeans(
-    n_clusters=selected_k,
-    random_state=42,
-    n_init=10
-)
-
-df["cluster"] = kmeans.fit_predict(X)
-
-
-# ==================================================
-# 9. 군집별 게임 수
-# ==================================================
-
-st.subheader("군집별 게임 수")
-
-cluster_counts = (
+cluster_count = (
     df["cluster"]
     .value_counts()
     .sort_index()
     .reset_index()
 )
 
-cluster_counts.columns = [
+cluster_count.columns = [
     "군집",
     "게임 수"
 ]
 
 st.dataframe(
-    cluster_counts,
+    cluster_count,
     use_container_width=True,
     hide_index=True
 )
 
 
 # ==================================================
-# 10. 군집별 실제 특성
+# 7. 군집별 평균
 # ==================================================
 
-st.subheader("군집별 평균 특성")
-
-profile_columns = [
-    "price",
-    "owners_midpoint",
-    "peak_ccu",
-    "num_reviews_total",
-    "pct_pos_total",
-    "average_playtime_forever",
-    "metacritic_score"
-]
+st.header("5. 군집별 특징")
 
 cluster_profile = (
-    df.groupby("cluster")[profile_columns]
+    df.groupby("cluster")[features]
     .mean()
     .round(2)
 )
 
-cluster_profile = cluster_profile.rename(
-    columns={
-        "price": "평균 가격",
-        "owners_midpoint": "평균 추정 소유자",
-        "peak_ccu": "평균 peak_ccu",
-        "num_reviews_total": "평균 리뷰 수",
-        "pct_pos_total": "평균 긍정 평가율",
-        "average_playtime_forever": "평균 플레이타임",
-        "metacritic_score": "평균 메타크리틱"
-    }
-)
+cluster_profile.columns = [
+    "평균 가격",
+    "평균 추정 소유자 수",
+    "평균 peak_ccu",
+    "평균 리뷰 수",
+    "평균 긍정 평가율",
+    "평균 플레이타임"
+]
 
 st.dataframe(
     cluster_profile,
@@ -322,19 +233,17 @@ st.dataframe(
 
 
 # ==================================================
-# 11. 군집별 대표 게임
+# 8. 군집별 대표 게임
 # ==================================================
 
-st.header("7. 군집별 게임 확인")
+st.header("6. 각 군집의 대표 게임")
 
-for cluster_number in range(selected_k):
+for cluster in range(k):
 
-    st.subheader(
-        f"군집 {cluster_number}"
-    )
+    st.subheader(f"군집 {cluster}")
 
-    games = (
-        df[df["cluster"] == cluster_number]
+    cluster_games = (
+        df[df["cluster"] == cluster]
         [
             [
                 "name",
@@ -342,40 +251,37 @@ for cluster_number in range(selected_k):
                 "estimated_owners",
                 "peak_ccu",
                 "num_reviews_total",
-                "pct_pos_total"
+                "pct_pos_total",
+                "average_playtime_forever"
             ]
         ]
         .sort_values(
             "peak_ccu",
             ascending=False
         )
-        .head(15)
+        .head(10)
     )
 
     st.dataframe(
-        games,
+        cluster_games,
         use_container_width=True,
         hide_index=True
     )
 
 
 # ==================================================
-# 12. 분석 안내
+# 9. 해석
 # ==================================================
 
-st.header("8. 결과 해석")
+st.header("7. 결과에서 확인할 점")
 
 st.write("""
-각 군집의 평균값과 대표 게임을 비교합니다.
+군집별 평균값과 대표 게임을 비교해 다음 내용을 확인합니다.
 
-특히 다음을 확인합니다.
-
-- 소유자 수가 많은 게임이 같은 군집에 모이는가?
-- peak_ccu가 높은 게임들이 같은 군집에 모이는가?
-- 인기 게임은 리뷰 수도 많은가?
-- 인기 게임의 긍정 평가율은 높은가?
-- 인기 게임의 평균 플레이타임은 긴가?
-- 가격과 인기도 사이에 특징이 나타나는가?
-
-이를 이용해 인기 게임들이 공통적으로 보이는 특징을 찾습니다.
+1. 인기 게임들이 하나의 군집에 모이는가?
+2. 소유자 수가 많은 게임은 peak_ccu도 높은가?
+3. 인기 게임은 리뷰 수도 많은가?
+4. 인기 게임의 긍정 평가율은 높은가?
+5. 평균 플레이타임에도 차이가 나타나는가?
+6. 가격에 따라 군집의 특징이 달라지는가?
 """)
