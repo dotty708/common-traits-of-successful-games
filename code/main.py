@@ -13,14 +13,15 @@ from sklearn.decomposition import PCA
 # =========================================================
 
 st.set_page_config(
-    page_title="Steam 게임 K-Means 분석",
+    page_title="Steam K-Means 분석",
     layout="wide"
 )
 
-st.title("Steam 게임 인기 특성 K-Means 군집 분석")
+st.title("Steam 게임 K-Means 군집 분석")
 
 st.write(
-    "연구 질문: **인기 있는 게임은 정말 공통적인 특성을 가지고 있는가?**"
+    "데이터셋의 열을 직접 선택하여 "
+    "K-Means 군집화 결과를 비교할 수 있습니다."
 )
 
 
@@ -42,7 +43,7 @@ def load_data():
 
 
 try:
-    with st.spinner("Steam 게임 데이터를 불러오는 중..."):
+    with st.spinner("데이터를 불러오는 중..."):
         df = load_data()
 
 except Exception as e:
@@ -51,53 +52,11 @@ except Exception as e:
     st.stop()
 
 
-st.success("데이터를 정상적으로 불러왔습니다.")
-
-
 # =========================================================
-# 2. 기본 정보
+# 2. estimated_owners → 중앙값 변환
 # =========================================================
-
-st.header("1. 데이터 기본 정보")
-
-col1, col2, col3 = st.columns(3)
-
-col1.metric(
-    "전체 게임 수",
-    f"{len(df):,}"
-)
-
-col2.metric(
-    "전체 열 수",
-    f"{len(df.columns):,}"
-)
-
-col3.metric(
-    "전체 결측값",
-    f"{df.isna().sum().sum():,}"
-)
-
-with st.expander("원본 데이터 일부 보기"):
-    st.dataframe(
-        df.head(20),
-        use_container_width=True
-    )
-
-
-# =========================================================
-# 3. estimated_owners 변환
-# =========================================================
-
-st.header("2. 데이터 전처리")
-
 
 def convert_owners(value):
-    """
-    예:
-    '20000000 - 50000000'
-        ↓
-    35000000
-    """
 
     try:
         text = str(value).replace(",", "").strip()
@@ -119,37 +78,67 @@ def convert_owners(value):
         return np.nan
 
 
-df["owners_midpoint"] = df["estimated_owners"].apply(
-    convert_owners
-)
+if "estimated_owners" in df.columns:
 
-
-st.write(
-    "`estimated_owners`는 정확한 소유자 수가 아니라 "
-    "범위로 저장되어 있으므로 최솟값과 최댓값의 "
-    "**중앙값(midpoint)** 으로 변환했습니다."
-)
-
-owner_example_columns = [
-    "name",
-    "estimated_owners",
-    "owners_midpoint"
-]
-
-st.dataframe(
-    df[owner_example_columns].head(10),
-    use_container_width=True,
-    hide_index=True
-)
+    df["owners_midpoint"] = (
+        df["estimated_owners"]
+        .apply(convert_owners)
+    )
 
 
 # =========================================================
-# 4. 군집화 변수 선택
+# 3. 기본 정보
 # =========================================================
 
-st.header("3. K-Means 군집화 변수")
+st.header("1. 데이터 정보")
 
-cluster_features = [
+col1, col2, col3 = st.columns(3)
+
+col1.metric(
+    "게임 수",
+    f"{len(df):,}"
+)
+
+col2.metric(
+    "원본 열 수",
+    len(df.columns)
+)
+
+col3.metric(
+    "결측값",
+    f"{df.isna().sum().sum():,}"
+)
+
+
+with st.expander("데이터셋 확인"):
+
+    st.dataframe(
+        df.head(20),
+        use_container_width=True
+    )
+
+
+# =========================================================
+# 4. K-Means에 사용 가능한 수치형 열 찾기
+# =========================================================
+
+# 숫자형 열 자동 탐색
+numeric_columns = (
+    df.select_dtypes(
+        include=[np.number]
+    )
+    .columns
+    .tolist()
+)
+
+
+# appid는 게임 식별 번호이므로 분석 변수에서 제외
+if "appid" in numeric_columns:
+    numeric_columns.remove("appid")
+
+
+# 추천 기본값
+recommended_features = [
     "price",
     "owners_midpoint",
     "peak_ccu",
@@ -157,216 +146,343 @@ cluster_features = [
     "negative"
 ]
 
-st.write(
-    """
-군집화에는 다음 5개 특성만 사용합니다.
+default_features = [
+    column
+    for column in recommended_features
+    if column in numeric_columns
+]
 
-- **price** : 게임 가격
-- **owners_midpoint** : 추정 소유자 수 범위의 중앙값
-- **peak_ccu** : 최대 동시 접속자 수
-- **positive** : 긍정 리뷰 수
-- **negative** : 부정 리뷰 수
-"""
+
+# =========================================================
+# 5. 분석 설정
+# =========================================================
+
+st.header("2. 군집화 조건 설정")
+
+st.write(
+    "아래에서 K-Means에 사용할 열을 직접 선택하세요."
 )
 
 
-# =========================================================
-# 5. 숫자 변환 및 이상값 처리
-# =========================================================
+selected_features = st.multiselect(
+    "군집화에 사용할 열",
+    options=numeric_columns,
+    default=default_features
+)
 
-for column in cluster_features:
 
-    df[column] = pd.to_numeric(
-        df[column],
-        errors="coerce"
+# 최소 2개 필요
+if len(selected_features) < 2:
+
+    st.warning(
+        "군집화를 위해 최소 2개의 열을 선택하세요."
     )
 
-
-# 논리적으로 불가능한 음수값을 결측치로 처리
-for column in cluster_features:
-
-    df.loc[
-        df[column] < 0,
-        column
-    ] = np.nan
-
-
-before_count = len(df)
-
-cluster_df = df.dropna(
-    subset=cluster_features
-).copy()
-
-after_count = len(cluster_df)
-
-removed_count = before_count - after_count
-
-
-col1, col2, col3 = st.columns(3)
-
-col1.metric(
-    "원본 게임",
-    f"{before_count:,}"
-)
-
-col2.metric(
-    "군집화 사용 게임",
-    f"{after_count:,}"
-)
-
-col3.metric(
-    "제외된 게임",
-    f"{removed_count:,}"
-)
-
-
-st.caption(
-    "-1 등 논리적으로 불가능한 음수값과 "
-    "군집화 핵심 변수의 결측값이 있는 게임은 "
-    "K-Means 분석에서 제외했습니다."
-)
+    st.stop()
 
 
 # =========================================================
-# 6. log1p 변환
+# 6. 로그 변환 설정
 # =========================================================
 
-st.header("4. 로그 변환 및 표준화")
-
-model_df = cluster_df[
-    cluster_features
-].copy()
-
-
-# 사용자가 정한 세 변수만 log1p 적용
-log_columns = [
+recommended_log = [
     "peak_ccu",
     "positive",
     "negative"
 ]
 
+default_log = [
+    column
+    for column in recommended_log
+    if column in selected_features
+]
 
-for column in log_columns:
 
-    model_df[column] = np.log1p(
-        model_df[column]
-    )
+log_features = st.multiselect(
+    "log1p 변환을 적용할 열",
+    options=selected_features,
+    default=default_log
+)
 
 
-st.write(
-    """
-값의 분포가 매우 큰 다음 변수에는 **log1p 변환**을 적용했습니다.
-
-- peak_ccu
-- positive
-- negative
-
-`price`와 `owners_midpoint`는 로그 변환하지 않고,
-이후 모든 변수를 StandardScaler로 표준화합니다.
-"""
+st.caption(
+    "값의 차이가 매우 큰 변수에 log1p를 적용하면 "
+    "일부 초대형 게임이 군집 결과를 지나치게 지배하는 것을 "
+    "줄일 수 있습니다."
 )
 
 
 # =========================================================
-# 7. 표준화
+# 7. K 선택
 # =========================================================
-
-scaler = StandardScaler()
-
-X_scaled = scaler.fit_transform(
-    model_df
-)
-
-
-# =========================================================
-# 8. K-Means 실행
-# =========================================================
-
-st.header("5. K-Means 군집화")
 
 k = st.slider(
     "군집 개수 K",
     min_value=2,
-    max_value=6,
+    max_value=8,
     value=3,
     step=1
 )
 
 
-with st.spinner("K-Means 군집을 계산하는 중..."):
+# =========================================================
+# 8. 선택한 조건 표시
+# =========================================================
 
-    kmeans = KMeans(
+st.subheader("현재 분석 설정")
+
+setting_col1, setting_col2, setting_col3 = (
+    st.columns(3)
+)
+
+setting_col1.write("**선택한 변수**")
+
+setting_col1.write(
+    ", ".join(selected_features)
+)
+
+setting_col2.write("**log1p 적용**")
+
+if log_features:
+
+    setting_col2.write(
+        ", ".join(log_features)
+    )
+
+else:
+
+    setting_col2.write("없음")
+
+
+setting_col3.write("**군집 개수**")
+
+setting_col3.write(
+    f"K = {k}"
+)
+
+
+# =========================================================
+# 9. 선택된 데이터 만들기
+# =========================================================
+
+analysis_df = df.copy()
+
+X = analysis_df[
+    selected_features
+].copy()
+
+
+# 숫자 변환
+for column in selected_features:
+
+    X[column] = pd.to_numeric(
+        X[column],
+        errors="coerce"
+    )
+
+
+# =========================================================
+# 10. 음수값 처리
+# =========================================================
+
+# 현재 데이터에서는 -1 등이
+# 데이터 없음 표시로 사용되는 경우가 있으므로
+# 음수를 NaN으로 변환
+
+for column in selected_features:
+
+    X.loc[
+        X[column] < 0,
+        column
+    ] = np.nan
+
+
+# =========================================================
+# 11. 결측 행 제거
+# =========================================================
+
+valid_rows = X.notna().all(axis=1)
+
+X = X.loc[
+    valid_rows
+].copy()
+
+analysis_df = analysis_df.loc[
+    valid_rows
+].copy()
+
+
+original_count = len(df)
+
+used_count = len(X)
+
+removed_count = (
+    original_count - used_count
+)
+
+
+st.subheader("전처리 결과")
+
+col1, col2, col3 = st.columns(3)
+
+col1.metric(
+    "전체 게임",
+    f"{original_count:,}"
+)
+
+col2.metric(
+    "분석 사용",
+    f"{used_count:,}"
+)
+
+col3.metric(
+    "제외",
+    f"{removed_count:,}"
+)
+
+
+if used_count < k:
+
+    st.error(
+        "분석 가능한 데이터 수보다 K가 큽니다."
+    )
+
+    st.stop()
+
+
+# =========================================================
+# 12. log1p 변환
+# =========================================================
+
+for column in log_features:
+
+    X[column] = np.log1p(
+        X[column]
+    )
+
+
+# =========================================================
+# 13. StandardScaler
+# =========================================================
+
+scaler = StandardScaler()
+
+X_scaled = scaler.fit_transform(
+    X
+)
+
+
+# =========================================================
+# 14. K-Means
+# =========================================================
+
+st.header("3. K-Means 실행")
+
+
+with st.spinner("K-Means 계산 중..."):
+
+    model = KMeans(
         n_clusters=k,
         random_state=42,
         n_init=10
     )
 
-    cluster_labels = kmeans.fit_predict(
+    labels = model.fit_predict(
         X_scaled
     )
 
 
-cluster_df["cluster"] = cluster_labels
+analysis_df["cluster"] = labels
 
-cluster_df["cluster_name"] = (
-    cluster_df["cluster"]
-    .apply(lambda x: f"군집 {x}")
+analysis_df["cluster_name"] = (
+    analysis_df["cluster"]
+    .apply(
+        lambda x: f"군집 {x}"
+    )
 )
 
 
 st.success(
-    f"K = {k} 기준 군집화가 완료되었습니다."
+    f"{used_count:,}개 게임을 이용하여 "
+    f"K={k} 군집화를 완료했습니다."
 )
 
 
 # =========================================================
-# 9. PCA 2차원 변환
+# 15. PCA
 # =========================================================
 
-st.header("6. 군집 분포 시각화")
+st.header("4. K-Means 군집 분포")
+
 
 pca = PCA(
-    n_components=2,
-    random_state=42
+    n_components=2
 )
 
 pca_result = pca.fit_transform(
     X_scaled
 )
 
-cluster_df["PCA1"] = pca_result[:, 0]
-cluster_df["PCA2"] = pca_result[:, 1]
+
+analysis_df["PCA1"] = (
+    pca_result[:, 0]
+)
+
+analysis_df["PCA2"] = (
+    pca_result[:, 1]
+)
 
 
-explained = (
-    pca.explained_variance_ratio_.sum() * 100
+explained_variance = (
+    pca.explained_variance_ratio_.sum()
+    * 100
 )
 
 
 st.write(
-    f"5차원 군집 데이터를 화면에서 확인하기 위해 "
-    f"PCA로 2차원으로 축소했습니다. "
-    f"두 축이 설명하는 분산은 약 **{explained:.1f}%** 입니다."
+    f"선택한 {len(selected_features)}개 특성을 "
+    f"PCA를 이용하여 2차원으로 표현했습니다. "
+    f"두 축의 설명력은 약 "
+    f"**{explained_variance:.1f}%** 입니다."
 )
 
 
-# 데이터가 너무 많으면 브라우저가 느려질 수 있으므로
-# 그래프 표시만 샘플링
-if len(cluster_df) > 15000:
+# =========================================================
+# 16. 그래프용 샘플
+# =========================================================
 
-    plot_df = cluster_df.sample(
+if len(analysis_df) > 15000:
+
+    plot_df = analysis_df.sample(
         15000,
         random_state=42
     )
 
     st.caption(
-        "그래프 렌더링 속도를 위해 15,000개 게임을 "
-        "무작위 표본으로 표시합니다. "
-        "K-Means 자체는 전체 데이터를 사용했습니다."
+        "화면 렌더링 속도를 위해 그래프에는 "
+        "15,000개 게임만 무작위로 표시합니다. "
+        "K-Means 계산은 전체 데이터를 사용했습니다."
     )
 
 else:
-    plot_df = cluster_df
+
+    plot_df = analysis_df
+
+
+# =========================================================
+# 17. PCA Plotly 그래프
+# =========================================================
+
+hover_columns = {}
+
+
+for column in selected_features:
+
+    hover_columns[column] = True
+
+
+hover_columns["PCA1"] = False
+hover_columns["PCA2"] = False
 
 
 fig_pca = px.scatter(
@@ -375,24 +491,18 @@ fig_pca = px.scatter(
     y="PCA2",
     color="cluster_name",
     hover_name="name",
-    hover_data={
-        "price": ":.2f",
-        "owners_midpoint": ":,.0f",
-        "peak_ccu": ":,.0f",
-        "positive": ":,.0f",
-        "negative": ":,.0f",
-        "PCA1": False,
-        "PCA2": False
-    },
-    title="K-Means 군집 분포 (PCA 2차원 시각화)",
-    opacity=0.55
+    hover_data=hover_columns,
+    opacity=0.55,
+    title="선택한 특성에 따른 K-Means 군집"
 )
+
 
 fig_pca.update_layout(
     xaxis_title="PCA 1",
     yaxis_title="PCA 2",
     legend_title="군집"
 )
+
 
 st.plotly_chart(
     fig_pca,
@@ -401,17 +511,21 @@ st.plotly_chart(
 
 
 # =========================================================
-# 10. 군집별 게임 수
+# 18. 군집별 게임 수
 # =========================================================
 
-st.header("7. 군집별 게임 수")
+st.header("5. 군집별 게임 수")
+
 
 cluster_counts = (
-    cluster_df["cluster_name"]
+    analysis_df[
+        "cluster_name"
+    ]
     .value_counts()
     .sort_index()
     .reset_index()
 )
+
 
 cluster_counts.columns = [
     "군집",
@@ -427,10 +541,6 @@ fig_count = px.bar(
     title="군집별 게임 수"
 )
 
-fig_count.update_layout(
-    xaxis_title="군집",
-    yaxis_title="게임 수"
-)
 
 st.plotly_chart(
     fig_count,
@@ -439,159 +549,164 @@ st.plotly_chart(
 
 
 # =========================================================
-# 11. 군집별 실제 평균값
+# 19. 군집별 평균
 # =========================================================
 
-st.header("8. 군집별 특성 비교")
+st.header("6. 군집별 특성 평균")
 
 
-profile = (
-    cluster_df
-    .groupby("cluster_name")[
-        cluster_features
-    ]
+cluster_profile = (
+    analysis_df
+    .groupby(
+        "cluster_name"
+    )[selected_features]
     .mean()
+    .round(2)
     .reset_index()
 )
 
 
-profile_display = profile.copy()
-
-profile_display.columns = [
-    "군집",
-    "평균 가격",
-    "평균 추정 소유자 수",
-    "평균 peak_ccu",
-    "평균 긍정 리뷰",
-    "평균 부정 리뷰"
-]
-
-
-st.subheader("군집별 실제 평균값")
-
 st.dataframe(
-    profile_display,
+    cluster_profile,
     use_container_width=True,
     hide_index=True
 )
 
 
 # =========================================================
-# 12. 원하는 지표를 선택해서 군집 비교
+# 20. 특정 특성 그래프
 # =========================================================
 
-st.subheader("군집별 지표 비교")
-
-metric_options = {
-    "평균 가격": "price",
-    "평균 추정 소유자 수": "owners_midpoint",
-    "평균 peak_ccu": "peak_ccu",
-    "평균 긍정 리뷰": "positive",
-    "평균 부정 리뷰": "negative"
-}
-
-
-selected_metric_name = st.selectbox(
-    "비교할 지표",
-    list(metric_options.keys())
+st.subheader(
+    "군집별 특성 비교"
 )
 
-selected_metric = metric_options[
-    selected_metric_name
-]
+
+compare_feature = st.selectbox(
+    "그래프로 비교할 특성",
+    options=selected_features
+)
 
 
-metric_df = (
-    cluster_df
-    .groupby("cluster_name")[selected_metric]
+compare_df = (
+    analysis_df
+    .groupby(
+        "cluster_name"
+    )[compare_feature]
     .mean()
     .reset_index()
 )
 
-metric_df.columns = [
+
+compare_df.columns = [
     "군집",
-    selected_metric_name
+    "평균값"
 ]
 
 
-fig_metric = px.bar(
-    metric_df,
+fig_compare = px.bar(
+    compare_df,
     x="군집",
-    y=selected_metric_name,
+    y="평균값",
     text_auto=".3s",
-    title=f"군집별 {selected_metric_name}"
+    title=(
+        f"군집별 {compare_feature} 평균"
+    )
 )
 
-fig_metric.update_layout(
-    xaxis_title="군집",
-    yaxis_title=selected_metric_name
+
+fig_compare.update_layout(
+    yaxis_title=compare_feature
 )
+
 
 st.plotly_chart(
-    fig_metric,
+    fig_compare,
     use_container_width=True
 )
 
 
 # =========================================================
-# 13. 실제 인기도 지표 관계
+# 21. 두 변수 관계 직접 선택
 # =========================================================
 
-st.header("9. peak_ccu와 긍정 리뷰 관계")
+st.header("7. 두 특성의 관계")
 
 
-relationship_df = cluster_df[
-    (cluster_df["peak_ccu"] > 0) &
-    (cluster_df["positive"] > 0)
+x_feature = st.selectbox(
+    "X축",
+    options=selected_features,
+    index=0
+)
+
+
+y_options = [
+    column
+    for column in selected_features
+    if column != x_feature
+]
+
+
+y_feature = st.selectbox(
+    "Y축",
+    options=y_options
+)
+
+
+relationship_plot = plot_df[
+    [
+        "name",
+        "cluster_name",
+        x_feature,
+        y_feature
+    ]
 ].copy()
 
 
-# 그래프가 너무 무거워지는 것 방지
-if len(relationship_df) > 15000:
-
-    relationship_plot_df = relationship_df.sample(
-        15000,
-        random_state=42
-    )
-
-else:
-    relationship_plot_df = relationship_df
-
-
-fig_relationship = px.scatter(
-    relationship_plot_df,
-    x="positive",
-    y="peak_ccu",
+fig_relation = px.scatter(
+    relationship_plot,
+    x=x_feature,
+    y=y_feature,
     color="cluster_name",
     hover_name="name",
-    hover_data={
-        "estimated_owners": True,
-        "price": ":.2f",
-        "negative": ":,.0f"
-    },
-    log_x=True,
-    log_y=True,
     opacity=0.55,
-    title="긍정 리뷰 수와 최대 동시 접속자 수"
+    title=(
+        f"{x_feature}와 "
+        f"{y_feature}의 관계"
+    )
 )
 
-fig_relationship.update_layout(
-    xaxis_title="긍정 리뷰 수 (로그 축)",
-    yaxis_title="peak_ccu (로그 축)",
+
+fig_relation.update_layout(
+    xaxis_title=x_feature,
+    yaxis_title=y_feature,
     legend_title="군집"
 )
 
+
 st.plotly_chart(
-    fig_relationship,
+    fig_relation,
     use_container_width=True
 )
 
 
 # =========================================================
-# 14. 군집별 대표 게임
+# 22. 군집별 대표 게임
 # =========================================================
 
-st.header("10. 각 군집의 대표 게임")
+st.header("8. 군집별 게임 확인")
+
+
+# 정렬 기준도 직접 선택
+sort_feature = st.selectbox(
+    "대표 게임 정렬 기준",
+    options=selected_features,
+    index=(
+        selected_features.index("peak_ccu")
+        if "peak_ccu" in selected_features
+        else 0
+    )
+)
 
 
 for cluster_number in range(k):
@@ -600,25 +715,41 @@ for cluster_number in range(k):
         f"군집 {cluster_number}"
     )
 
+
+    display_columns = [
+        "name"
+    ]
+
+
+    # estimated_owners가 있으면 같이 표시
+    if "estimated_owners" in analysis_df.columns:
+
+        display_columns.append(
+            "estimated_owners"
+        )
+
+
+    for column in selected_features:
+
+        if column not in display_columns:
+
+            display_columns.append(
+                column
+            )
+
+
     games = (
-        cluster_df[
-            cluster_df["cluster"] == cluster_number
-        ][
-            [
-                "name",
-                "price",
-                "estimated_owners",
-                "peak_ccu",
-                "positive",
-                "negative"
-            ]
-        ]
+        analysis_df[
+            analysis_df["cluster"]
+            == cluster_number
+        ][display_columns]
         .sort_values(
-            "peak_ccu",
+            sort_feature,
             ascending=False
         )
         .head(15)
     )
+
 
     st.dataframe(
         games,
@@ -628,24 +759,23 @@ for cluster_number in range(k):
 
 
 # =========================================================
-# 15. 결과 해석 안내
+# 23. 분석 설명
 # =========================================================
 
-st.header("11. 결과 해석")
+st.header("9. 분석 방법")
+
 
 st.write(
     """
-군집별 평균값과 대표 게임을 비교하여 각 군집의 특징을 해석합니다.
+### 분석 과정
 
-특히 다음 내용을 확인합니다.
-
-1. 높은 동시 접속자 수를 가진 게임들이 같은 군집에 모이는가?
-2. 추정 소유자 수가 많은 게임들이 특정 군집에 집중되는가?
-3. 긍정 리뷰와 부정 리뷰의 규모에 따라 군집이 어떻게 나뉘는가?
-4. 가격이 군집 구분에 영향을 주는가?
-5. 유명한 게임들이 공통적으로 속하는 군집이 존재하는가?
-
-이후 각 군집의 특징을 분석하여
-'인기 게임이 공통적인 특성을 가지고 있는가'를 탐색합니다.
+1. 데이터셋에서 사용자가 군집화에 사용할 특성을 선택합니다.
+2. -1 등 음수로 기록된 비정상값을 결측값으로 처리합니다.
+3. 선택한 핵심 특성이 누락된 게임은 군집화에서 제외합니다.
+4. 사용자가 지정한 변수에 `log1p` 변환을 적용합니다.
+5. StandardScaler를 이용해 변수들의 단위를 표준화합니다.
+6. K-Means를 이용하여 게임들을 K개의 군집으로 분류합니다.
+7. PCA를 이용해 군집 결과를 2차원으로 시각화합니다.
+8. 각 군집의 평균값과 대표 게임을 비교하여 특징을 해석합니다.
 """
 )
