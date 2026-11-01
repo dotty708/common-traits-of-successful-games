@@ -33,7 +33,7 @@ DATA_URL = (
     "https://raw.githubusercontent.com/"
     "dotty708/common-traits-of-successful-games/"
     "refs/heads/main/data/"
-    "games_march2025_popularity_reduced.csv"
+    "games_march2025_popularity_filtered.csv"
 )
 
 
@@ -107,6 +107,27 @@ if "estimated_owners" in df.columns:
 
 st.header("1. 데이터 정보")
 
+st.subheader("사전 데이터 정리 기록")
+st.write("긍정 리뷰(positive)와 부정 리뷰(negative)가 모두 0인 행만 CSV에서 삭제했습니다. 무료 게임이나 둘 중 하나만 0인 게임은 이 조건으로 삭제하지 않았습니다.")
+st.dataframe(pd.DataFrame([{
+    "단계": "CSV 사전 정리(제공받은 원본 기준)",
+    "처리 전 행 수": 73965,
+    "삭제 행 수": 1402,
+    "저장한 행 수": 72563,
+    "열 수": 18,
+}]), use_container_width=True, hide_index=True)
+st.caption("위 수치는 이 대화에서 확인하고 저장한 CSV의 처리 기록입니다. 아래 개요와 분석 수치는 현재 GitHub에서 읽은 파일로 매번 계산합니다.")
+if original_shape != (72563, 18):
+    st.warning("현재 파일 크기가 저장 당시 기록과 다릅니다. 아래 현재 파일 기준 수치를 확인하세요.")
+remaining_no_reviews = (
+    pd.to_numeric(df["positive"], errors="coerce").eq(0)
+    & pd.to_numeric(df["negative"], errors="coerce").eq(0)
+).sum()
+if remaining_no_reviews:
+    st.warning(f"현재 파일에 긍정·부정 리뷰가 모두 0인 행이 {remaining_no_reviews:,}개 남아 있습니다. 업로드한 CSV를 확인하세요.")
+st.subheader("현재 불러온 CSV 개요")
+
+
 col1, col2, col3 = st.columns(3)
 
 col1.metric(
@@ -115,7 +136,7 @@ col1.metric(
 )
 
 col2.metric(
-    "원본 열 수",
+    "CSV 열 수(파생 변수 제외)",
     original_shape[1]
 )
 
@@ -336,8 +357,8 @@ st.write(
 )
 st.dataframe(pd.DataFrame(records), use_container_width=True, hide_index=True)
 c1, c2, c3 = st.columns(3)
-c1.metric("처리 전 행 수", f"{original_count:,}")
-c2.metric("처리 후 행 수", f"{used_count:,}")
+c1.metric("앱 추가 처리 전 행 수", f"{original_count:,}")
+c2.metric("앱 추가 처리 후 행 수", f"{used_count:,}")
 c3.metric("제외 행 수", f"{removed_count:,}")
 st.caption(f"원본 {original_shape[0]:,}행 × {original_shape[1]}열 · 분석 입력 {used_count:,}행 × {len(selected_features)}개 변수. 선택하지 않은 열의 결측치 때문에 행을 제외하지 않습니다.")
 
@@ -804,7 +825,7 @@ st.write(
     """
 ### 분석 과정
 
-1. 데이터셋에서 사용자가 군집화에 사용할 특성을 선택합니다.
+1. 긍정·부정 리뷰가 모두 0인 행을 제거해 저장한 CSV를 불러오고, 사용자가 군집화에 사용할 특성을 선택합니다.
 2. 실제 빈 수치 값은 옵션에 따라 해당 열의 중앙값으로 대체하고 정상적인 0은 유지합니다.
 3. -1 등 비정상값은 중앙값으로 채우지 않고, 선택한 변수에 남은 결측치가 있는 행을 제외합니다. 극단값 후보는 IQR로 집계하되 삭제하지 않습니다.
 4. 사용자가 지정한 변수에 `log1p` 변환을 적용합니다.
