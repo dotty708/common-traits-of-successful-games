@@ -56,14 +56,11 @@ except Exception as e:
 # 2. estimated_owners → 중앙값 변환
 # =========================================================
 
-# 파생 변수를 추가하기 전 원본 데이터 개요를 보관합니다.
+# 실제 빈 값과 공백 문자열을 같은 결측값으로 인식합니다.
+df = df.copy().replace(r"^\s*$", np.nan, regex=True)
 original_shape = df.shape
-column_summary = pd.DataFrame({
-    "열 이름": df.columns,
-    "자료형": df.dtypes.astype(str).values,
-    "결측치 수": df.isna().sum().values,
-    "결측 비율(%)": (df.isna().mean() * 100).round(2).values,
-})
+raw_missing = df.isna().sum()
+original_dtypes = df.dtypes.astype(str)
 
 def convert_owners(value):
 
@@ -95,6 +92,45 @@ if "estimated_owners" in df.columns:
     )
 
 
+# 중앙값 대체: 식별자와 문자형 열은 제외하고 수치형 측정값만 처리합니다.
+# 0은 무료 가격, 리뷰/접속자 0개 등을 의미할 수 있으므로 유지합니다.
+numeric_measurements = [
+    "price", "peak_ccu", "recommendations", "positive", "negative",
+    "pct_pos_total", "num_reviews_total", "num_reviews_recent", "pct_pos_recent",
+    "average_playtime_forever", "average_playtime_2weeks",
+    "median_playtime_forever", "median_playtime_2weeks", "metacritic_score",
+    "owners_midpoint",
+]
+imputation_records = []
+for column in numeric_measurements:
+    if column not in df.columns:
+        continue
+    values = pd.to_numeric(df[column], errors="coerce")
+    invalid = values.lt(0) | ~np.isfinite(values)
+    cleaned = values.mask(invalid)
+    missing_count = int(cleaned.isna().sum())
+    median_value = cleaned.median()
+    df[column] = cleaned.fillna(median_value)
+    imputation_records.append({
+        "열 이름": column,
+        "대체 전 결측치(비정상값 포함)": missing_count,
+        "대체 중앙값": median_value,
+        "중앙값으로 채운 수": missing_count if pd.notna(median_value) else 0,
+        "대체 후 결측치": int(df[column].isna().sum()),
+    })
+imputation_summary = pd.DataFrame(imputation_records)
+column_summary = pd.DataFrame({
+    "열 이름": list(original_dtypes.index),
+    "원본 자료형": original_dtypes.values,
+    "원본 빈 값 수": raw_missing.values,
+    "대체 전 결측치(비정상값 포함)": [
+        int(imputation_summary.set_index("열 이름").loc[c, "대체 전 결측치(비정상값 포함)"])
+        if c in numeric_measurements else int(raw_missing[c])
+        for c in original_dtypes.index
+    ],
+    "대체 후 결측치": df[list(original_dtypes.index)].isna().sum().values,
+})
+
 # =========================================================
 # 3. 기본 정보
 # =========================================================
@@ -114,12 +150,12 @@ col2.metric(
 )
 
 col3.metric(
-    "결측값",
-    f"{int(column_summary['결측치 수'].sum()):,}"
+    "대체 전 결측값(비정상값 포함)",
+    f"{int(column_summary['대체 전 결측치(비정상값 포함)'].sum()):,}"
 )
 
 
-st.subheader("원본 열별 자료형과 결측치")
+st.subheader("열별 자료형과 결측치 처리 전후")
 st.dataframe(column_summary, use_container_width=True, hide_index=True)
 
 with st.expander("데이터셋 확인"):
@@ -284,70 +320,40 @@ X = analysis_df[
 ].copy()
 
 
-# 선택한 변수만 기준으로 결측치를 처리합니다.
-# 원본 결측, 숫자 변환 실패, 무한대, 음수를 구분해 집계합니다.
-missing_before = X.isna().sum()
-converted = X.apply(pd.to_numeric, errors="coerce")
-conversion_failures = (X.notna() & converted.isna()).sum()
-infinite_mask = pd.DataFrame(
-    np.isinf(converted.to_numpy(dtype=float)),
-    index=converted.index,
-    columns=converted.columns,
+# 수치형 결측치는 위에서 전체 데이터의 해당 열 중앙값으로 채웠습니다.
+# 유효값이 전혀 없는 열은 중앙값을 계산할 수 없으므로 분석을 중단합니다.
+st.subheader("결측치 처리 방법 및 결과")
+st.write(
+    "수치형 측정값의 빈 값·공백·숫자 변환 실패·음수·무한대를 결측치로 보고, "
+    "각 열의 유효한 값으로 계산한 중앙값으로 채웠습니다. "
+    "무료 게임 가격 0원과 리뷰·접속자 수 0 등 정상적인 0은 그대로 유지했습니다. "
+    "게임 식별자와 게임명·출시일·보유자 수 범위 문자열은 중앙값 대체에서 제외했습니다. "
+    "보유자 수는 범위에서 계산한 수치형 owners_midpoint를 대상으로 대체했습니다."
 )
-infinite_counts = infinite_mask.sum()
-X = converted.mask(infinite_mask)
-
-# 기존 앱의 규칙을 유지합니다: 선택 변수의 음수는 분석에서 제외합니다.
-negative_mask = X.lt(0)
-negative_counts = negative_mask.sum()
-X = X.mask(negative_mask)
-
-preprocessing_summary = pd.DataFrame({
-    "분석 변수": selected_features,
-    "기존 결측치": missing_before.reindex(selected_features).values,
-    "숫자 변환 실패": conversion_failures.reindex(selected_features).values,
-    "무한대": infinite_counts.reindex(selected_features).values,
-    "음수 → 결측치": negative_counts.reindex(selected_features).values,
-    "처리 후 결측치": X.isna().sum().reindex(selected_features).values,
-})
-
-# 하나의 행에 여러 결측치가 있어도 제외 행은 한 번만 셉니다.
-valid_rows = X.notna().all(axis=1)
-X = X.loc[valid_rows].copy()
-analysis_df = analysis_df.loc[valid_rows].copy()
-
+st.dataframe(imputation_summary, use_container_width=True, hide_index=True)
+st.caption(
+    "중앙값은 로그 변환과 표준화 전에 계산합니다. "
+    "빈 원본 문자열이 남아 있어도 분석용 수치형 파생 변수는 대체될 수 있습니다. "
+    "0으로 표시된 점수·플레이 시간은 의미가 확인되지 않아 임의로 결측 처리하지 않았습니다."
+)
 original_count = len(df)
 used_count = len(X)
 removed_count = original_count - used_count
-
-st.subheader("결측치 처리 방법 및 결과")
-st.write(
-    "선택한 분석 변수 중 하나라도 결측치가 있는 행은 제외했습니다. "
-    "숫자로 변환할 수 없는 값과 무한대도 결측치로 처리했습니다. "
-    "기존 앱의 규칙에 따라 음수도 결측치로 바꿨으며, "
-    "평균이나 0으로 값을 채우지는 않았습니다. "
-    "선택하지 않은 열에만 결측치가 있는 행은 유지합니다."
-)
-st.caption(
-    "owners_midpoint의 결측치에는 estimated_owners가 비어 있거나 "
-    "범위를 숫자로 해석하지 못한 경우가 포함됩니다. "
-    "음수 제외 규칙은 해당 변수에서 음수가 유효한 값인지 확인한 뒤 적용해야 합니다."
-)
-st.dataframe(preprocessing_summary, use_container_width=True, hide_index=True)
-
 col1, col2, col3 = st.columns(3)
 col1.metric("처리 전 행 수", f"{original_count:,}")
 col2.metric("처리 후 행 수", f"{used_count:,}")
 col3.metric("제외한 행 수", f"{removed_count:,}")
 st.caption(
-    f"원본 데이터: {original_shape[0]:,}행 × {original_shape[1]}열 · "
-    f"분석 입력: {used_count:,}행 × {len(selected_features)}개 변수. "
-    "표의 결측치 수는 셀 개수이므로 합계가 제외 행 수와 다를 수 있습니다. "
-    "분석 변수 선택에 따라 제외 행 수가 달라집니다."
+    f"원본 {original_shape[0]:,}행 × {original_shape[1]}열 · "
+    f"분석 입력 {used_count:,}행 × {len(selected_features)}개 변수. "
+    "중앙값 대체는 행을 삭제하지 않습니다."
 )
-
+unfilled = X.columns[X.isna().any()].tolist()
+if unfilled:
+    st.error("유효한 값이 없어 중앙값을 계산할 수 없는 변수가 있습니다: " + ", ".join(unfilled))
+    st.stop()
 if used_count < k:
-    st.error("결측치 처리 후 분석 가능한 데이터 수보다 K가 큽니다. 변수나 K를 조정하세요.")
+    st.error("분석 가능한 데이터 수보다 K가 큽니다.")
     st.stop()
 
 
@@ -771,8 +777,8 @@ st.write(
 ### 분석 과정
 
 1. 데이터셋에서 사용자가 군집화에 사용할 특성을 선택합니다.
-2. -1 등 음수로 기록된 비정상값을 결측값으로 처리합니다.
-3. 선택한 핵심 특성이 누락된 게임은 군집화에서 제외합니다.
+2. 수치형 측정값의 빈 값과 -1 등 비정상값을 결측값으로 처리하고, 정상적인 0은 유지합니다.
+3. 결측값은 해당 열의 유효값 중앙값으로 대체하며 행은 삭제하지 않습니다.
 4. 사용자가 지정한 변수에 `log1p` 변환을 적용합니다.
 5. StandardScaler를 이용해 변수들의 단위를 표준화합니다.
 6. K-Means를 이용하여 게임들을 K개의 군집으로 분류합니다.
