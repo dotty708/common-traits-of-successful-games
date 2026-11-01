@@ -53,8 +53,23 @@ except Exception as e:
 
 
 # =========================================================
-# 2. estimated_owners → 중앙값 변환
+# 2. estimated_owners → 구간 중간값 변환
 # =========================================================
+
+raw_df = df.copy()
+df = df.copy().replace(r"^\s*$", np.nan, regex=True)
+original_shape = df.shape
+sentinel_columns = ["pct_pos_total", "num_reviews_total", "pct_pos_recent", "num_reviews_recent"]
+column_summary = pd.DataFrame({
+    "열 이름": df.columns,
+    "자료형": df.dtypes.astype(str).values,
+    "빈 값 수(공백 포함)": df.isna().sum().values,
+    "정보 없음(-1) 수": [int(pd.to_numeric(df[c], errors="coerce").eq(-1).sum())
+                         if c in sentinel_columns else 0 for c in df.columns],
+})
+
+st.info("팀 질문: Steam 게임을 가격·보유자 수·리뷰·동시접속자 특성으로 묶으면 어떤 차이가 나타날까?")
+st.caption("인기 지표를 비교하는 탐색적 군집 분석입니다. 군집 번호는 성공 순위가 아니며 인과관계를 뜻하지 않습니다.")
 
 def convert_owners(value):
 
@@ -69,7 +84,7 @@ def convert_owners(value):
         minimum = float(parts[0].strip())
         maximum = float(parts[1].strip())
 
-        if minimum < 0 or maximum < 0:
+        if not np.isfinite([minimum, maximum]).all() or minimum < 0 or maximum < minimum:
             return np.nan
 
         return (minimum + maximum) / 2
@@ -101,16 +116,21 @@ col1.metric(
 
 col2.metric(
     "원본 열 수",
-    len(df.columns)
+    original_shape[1]
 )
 
 col3.metric(
     "결측값",
-    f"{df.isna().sum().sum():,}"
+    f"{int(column_summary['빈 값 수(공백 포함)'].sum()):,}"
 )
 
 
-with st.expander("데이터셋 확인"):
+st.dataframe(column_summary, use_container_width=True, hide_index=True)
+st.caption("빈 값과 리뷰 관련 정보 없음(-1)은 구분해 집계합니다. 가격 0원은 무료 게임이므로 유지합니다.")
+with st.expander("데이터셋 확인 — 원본"):
+    st.dataframe(raw_df.head(20), use_container_width=True)
+
+with st.expander("구간 중간값 추가 후 데이터"):
 
     st.dataframe(
         df.head(20),
@@ -272,82 +292,71 @@ X = analysis_df[
 ].copy()
 
 
-# 숫자 변환
+# 실제 빈 값만 중앙값 대체 후보로 삼습니다.
+# 리뷰 정보 없음(-1)과 비정상값을 가상의 관측값으로 채우지 않습니다.
+fill_actual_missing = st.checkbox("실제 빈 수치 값을 해당 열의 중앙값으로 대체", value=True)
+records = []
 for column in selected_features:
-
-    X[column] = pd.to_numeric(
-        X[column],
-        errors="coerce"
-    )
-
-
-# =========================================================
-# 10. 음수값 처리
-# =========================================================
-
-# 현재 데이터에서는 -1 등이
-# 데이터 없음 표시로 사용되는 경우가 있으므로
-# 음수를 NaN으로 변환
-
-for column in selected_features:
-
-    X.loc[
-        X[column] < 0,
-        column
-    ] = np.nan
-
-
-# =========================================================
-# 11. 결측 행 제거
-# =========================================================
+    original = X[column]
+    actual_missing = original.isna()
+    values = pd.to_numeric(original, errors="coerce")
+    invalid = (~actual_missing) & (values.isna() | ~np.isfinite(values) | values.lt(0))
+    if column == "owners_midpoint":
+        # 범위 해석 실패는 실제 빈 값과 구분합니다.
+        actual_missing = df["estimated_owners"].isna()
+        invalid = (~actual_missing) & values.isna()
+    values = values.mask(invalid)
+    median = values.median()
+    fill_mask = actual_missing & pd.notna(median) & fill_actual_missing
+    values.loc[fill_mask] = median
+    X[column] = values
+    records.append({
+        "변수": column, "실제 빈 값": int(actual_missing.sum()),
+        "-1 등 비정상값": int(invalid.sum()),
+        "대체 중앙값": median if fill_mask.any() else np.nan,
+        "중앙값 대체 수": int(fill_mask.sum()),
+        "남은 결측치": int(values.isna().sum()),
+    })
 
 valid_rows = X.notna().all(axis=1)
-
-X = X.loc[
-    valid_rows
-].copy()
-
-analysis_df = analysis_df.loc[
-    valid_rows
-].copy()
-
-
+X = X.loc[valid_rows].copy()
+analysis_df = analysis_df.loc[valid_rows].copy()
+# 그래프와 평균표도 실제 분석에 사용한 대체 후 값으로 계산합니다.
+analysis_df.loc[:, selected_features] = X
 original_count = len(df)
-
 used_count = len(X)
+removed_count = original_count - used_count
 
-removed_count = (
-    original_count - used_count
+st.subheader("결측치·비정상값 처리 결과")
+st.write(
+    "실제 빈 수치 값은 옵션을 켠 경우 해당 열의 유효값 중앙값으로 채웁니다. "
+    "리뷰 관련 -1, 음수, 무한대, 숫자·보유자 범위 해석 실패는 비정상값으로 보고 "
+    "선택한 분석 변수에 남아 있으면 해당 행을 제외합니다. "
+    "무료 가격 0원과 리뷰·접속자 수 0은 유지합니다. 문자형 열과 식별자는 중앙값 대체 대상이 아닙니다."
 )
+st.dataframe(pd.DataFrame(records), use_container_width=True, hide_index=True)
+c1, c2, c3 = st.columns(3)
+c1.metric("처리 전 행 수", f"{original_count:,}")
+c2.metric("처리 후 행 수", f"{used_count:,}")
+c3.metric("제외 행 수", f"{removed_count:,}")
+st.caption(f"원본 {original_shape[0]:,}행 × {original_shape[1]}열 · 분석 입력 {used_count:,}행 × {len(selected_features)}개 변수. 선택하지 않은 열의 결측치 때문에 행을 제외하지 않습니다.")
 
-
-st.subheader("전처리 결과")
-
-col1, col2, col3 = st.columns(3)
-
-col1.metric(
-    "전체 게임",
-    f"{original_count:,}"
-)
-
-col2.metric(
-    "분석 사용",
-    f"{used_count:,}"
-)
-
-col3.metric(
-    "제외",
-    f"{removed_count:,}"
-)
-
-
-if used_count < k:
-
-    st.error(
-        "분석 가능한 데이터 수보다 K가 큽니다."
-    )
-
+if used_count < max(k, 2):
+    st.error("분석 가능한 행이 부족합니다. 변수 또는 K를 조정하세요.")
     st.stop()
+
+st.subheader("극단값 점검 및 처리")
+outlier_records = []
+for column in selected_features:
+    q1, q3 = X[column].quantile([0.25, 0.75])
+    iqr = q3 - q1
+    lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    count = int(((X[column] < lower) | (X[column] > upper)).sum())
+    outlier_records.append({"변수": column, "IQR 하한": lower, "IQR 상한": upper, "범위 밖 값 수": count})
+st.dataframe(pd.DataFrame(outlier_records), use_container_width=True, hide_index=True)
+st.write("IQR 범위 밖 값은 극단값 후보로 집계하되 삭제하거나 상한으로 자르지 않았습니다. 인기 게임의 실제 큰 값일 수 있기 때문입니다. 선택한 변수에 log1p를 적용해 큰 값의 영향을 완화하고, 이후 표준화합니다. 로그 변환과 표준화로 행 수는 바뀌지 않습니다.")
+if not log_features:
+    st.caption("현재 로그 변환을 선택하지 않았으므로 극단값 완화는 적용하지 않고 표준화만 합니다.")
 
 
 # =========================================================
@@ -387,6 +396,9 @@ with st.spinner("K-Means 계산 중..."):
         n_init=10
     )
 
+    if len(np.unique(X_scaled, axis=0)) < k:
+        st.error("서로 다른 분석 행 수보다 K가 큽니다. K를 줄이세요.")
+        st.stop()
     labels = model.fit_predict(
         X_scaled
     )
@@ -509,6 +521,8 @@ st.plotly_chart(
     use_container_width=True
 )
 
+st.write(f"**발견:** 선택 변수의 변동 중 첫 두 PCA 축이 설명하는 비율은 {explained_variance:.1f}%입니다. 2차원 그림에 담기지 않는 변동도 있으므로 겹침만으로 군집이 같다고 단정할 수 없습니다.")
+
 
 # =========================================================
 # 18. 군집별 게임 수
@@ -538,7 +552,8 @@ fig_count = px.bar(
     x="군집",
     y="게임 수",
     text_auto=",",
-    title="군집별 게임 수"
+    title="군집별 게임 수",
+    labels={"군집": "군집", "게임 수": "게임 수(개)"}
 )
 
 
@@ -546,6 +561,10 @@ st.plotly_chart(
     fig_count,
     use_container_width=True
 )
+
+largest = cluster_counts.loc[cluster_counts["게임 수"].idxmax()]
+smallest = cluster_counts.loc[cluster_counts["게임 수"].idxmin()]
+st.write(f"**발견:** 가장 큰 {largest['군집']}은 {int(largest['게임 수']):,}개({largest['게임 수']/used_count*100:.1f}%)이고, 가장 작은 {smallest['군집']}은 {int(smallest['게임 수']):,}개입니다.")
 
 
 # =========================================================
@@ -616,7 +635,8 @@ fig_compare = px.bar(
 
 
 fig_compare.update_layout(
-    yaxis_title=compare_feature
+    xaxis_title="군집",
+    yaxis_title=f"{compare_feature} 평균"
 )
 
 
@@ -624,6 +644,13 @@ st.plotly_chart(
     fig_compare,
     use_container_width=True
 )
+
+highest = compare_df.loc[compare_df["평균값"].idxmax()]
+lowest = compare_df.loc[compare_df["평균값"].idxmin()]
+st.write(f"**발견:** {compare_feature} 평균은 {highest['군집']}이 {highest['평균값']:,.2f}로 가장 높고, {lowest['군집']}이 {lowest['평균값']:,.2f}로 가장 낮습니다. 차이는 {highest['평균값']-lowest['평균값']:,.2f}입니다.")
+medians = analysis_df.groupby("cluster_name")[compare_feature].median().rename("중앙값")
+st.caption("평균은 초대형 게임의 영향을 받을 수 있습니다. 아래 중앙값과 함께 비교하세요. 수치는 로그 변환 전 단위입니다.")
+st.dataframe(medians.reset_index(), use_container_width=True, hide_index=True)
 
 
 # =========================================================
@@ -688,6 +715,14 @@ st.plotly_chart(
     fig_relation,
     use_container_width=True
 )
+
+correlation = analysis_df[[x_feature, y_feature]].corr().iloc[0, 1]
+if pd.notna(correlation):
+    direction = "양의" if correlation > 0 else "음의" if correlation < 0 else "0의"
+    st.write(f"**발견:** 전체 분석 데이터 {used_count:,}개에서 두 변수는 {direction} 선형 상관을 보이며, 피어슨 상관계수는 {correlation:.3f}입니다. 상관관계가 원인과 결과를 뜻하지는 않습니다.")
+else:
+    st.write("**발견:** 한 변수 이상이 상수여서 피어슨 상관계수를 계산할 수 없습니다.")
+st.caption(f"산점도에는 {len(plot_df):,}개를 표시하며, 상관계수는 전체 분석 행의 로그 변환 전 값으로 계산했습니다.")
 
 
 # =========================================================
@@ -770,8 +805,8 @@ st.write(
 ### 분석 과정
 
 1. 데이터셋에서 사용자가 군집화에 사용할 특성을 선택합니다.
-2. -1 등 음수로 기록된 비정상값을 결측값으로 처리합니다.
-3. 선택한 핵심 특성이 누락된 게임은 군집화에서 제외합니다.
+2. 실제 빈 수치 값은 옵션에 따라 해당 열의 중앙값으로 대체하고 정상적인 0은 유지합니다.
+3. -1 등 비정상값은 중앙값으로 채우지 않고, 선택한 변수에 남은 결측치가 있는 행을 제외합니다. 극단값 후보는 IQR로 집계하되 삭제하지 않습니다.
 4. 사용자가 지정한 변수에 `log1p` 변환을 적용합니다.
 5. StandardScaler를 이용해 변수들의 단위를 표준화합니다.
 6. K-Means를 이용하여 게임들을 K개의 군집으로 분류합니다.
