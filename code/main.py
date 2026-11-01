@@ -56,6 +56,15 @@ except Exception as e:
 # 2. estimated_owners → 중앙값 변환
 # =========================================================
 
+# 파생 변수를 추가하기 전 원본 데이터 개요를 보관합니다.
+original_shape = df.shape
+column_summary = pd.DataFrame({
+    "열 이름": df.columns,
+    "자료형": df.dtypes.astype(str).values,
+    "결측치 수": df.isna().sum().values,
+    "결측 비율(%)": (df.isna().mean() * 100).round(2).values,
+})
+
 def convert_owners(value):
 
     try:
@@ -101,14 +110,17 @@ col1.metric(
 
 col2.metric(
     "원본 열 수",
-    len(df.columns)
+    original_shape[1]
 )
 
 col3.metric(
     "결측값",
-    f"{df.isna().sum().sum():,}"
+    f"{int(column_summary['결측치 수'].sum()):,}"
 )
 
+
+st.subheader("원본 열별 자료형과 결측치")
+st.dataframe(column_summary, use_container_width=True, hide_index=True)
 
 with st.expander("데이터셋 확인"):
 
@@ -272,81 +284,70 @@ X = analysis_df[
 ].copy()
 
 
-# 숫자 변환
-for column in selected_features:
+# 선택한 변수만 기준으로 결측치를 처리합니다.
+# 원본 결측, 숫자 변환 실패, 무한대, 음수를 구분해 집계합니다.
+missing_before = X.isna().sum()
+converted = X.apply(pd.to_numeric, errors="coerce")
+conversion_failures = (X.notna() & converted.isna()).sum()
+infinite_mask = pd.DataFrame(
+    np.isinf(converted.to_numpy(dtype=float)),
+    index=converted.index,
+    columns=converted.columns,
+)
+infinite_counts = infinite_mask.sum()
+X = converted.mask(infinite_mask)
 
-    X[column] = pd.to_numeric(
-        X[column],
-        errors="coerce"
-    )
+# 기존 앱의 규칙을 유지합니다: 선택 변수의 음수는 분석에서 제외합니다.
+negative_mask = X.lt(0)
+negative_counts = negative_mask.sum()
+X = X.mask(negative_mask)
 
+preprocessing_summary = pd.DataFrame({
+    "분석 변수": selected_features,
+    "기존 결측치": missing_before.reindex(selected_features).values,
+    "숫자 변환 실패": conversion_failures.reindex(selected_features).values,
+    "무한대": infinite_counts.reindex(selected_features).values,
+    "음수 → 결측치": negative_counts.reindex(selected_features).values,
+    "처리 후 결측치": X.isna().sum().reindex(selected_features).values,
+})
 
-# =========================================================
-# 10. 음수값 처리
-# =========================================================
-
-# 현재 데이터에서는 -1 등이
-# 데이터 없음 표시로 사용되는 경우가 있으므로
-# 음수를 NaN으로 변환
-
-for column in selected_features:
-
-    X.loc[
-        X[column] < 0,
-        column
-    ] = np.nan
-
-
-# =========================================================
-# 11. 결측 행 제거
-# =========================================================
-
+# 하나의 행에 여러 결측치가 있어도 제외 행은 한 번만 셉니다.
 valid_rows = X.notna().all(axis=1)
-
-X = X.loc[
-    valid_rows
-].copy()
-
-analysis_df = analysis_df.loc[
-    valid_rows
-].copy()
-
+X = X.loc[valid_rows].copy()
+analysis_df = analysis_df.loc[valid_rows].copy()
 
 original_count = len(df)
-
 used_count = len(X)
+removed_count = original_count - used_count
 
-removed_count = (
-    original_count - used_count
+st.subheader("결측치 처리 방법 및 결과")
+st.write(
+    "선택한 분석 변수 중 하나라도 결측치가 있는 행은 제외했습니다. "
+    "숫자로 변환할 수 없는 값과 무한대도 결측치로 처리했습니다. "
+    "기존 앱의 규칙에 따라 음수도 결측치로 바꿨으며, "
+    "평균이나 0으로 값을 채우지는 않았습니다. "
+    "선택하지 않은 열에만 결측치가 있는 행은 유지합니다."
 )
-
-
-st.subheader("전처리 결과")
+st.caption(
+    "owners_midpoint의 결측치에는 estimated_owners가 비어 있거나 "
+    "범위를 숫자로 해석하지 못한 경우가 포함됩니다. "
+    "음수 제외 규칙은 해당 변수에서 음수가 유효한 값인지 확인한 뒤 적용해야 합니다."
+)
+st.dataframe(preprocessing_summary, use_container_width=True, hide_index=True)
 
 col1, col2, col3 = st.columns(3)
-
-col1.metric(
-    "전체 게임",
-    f"{original_count:,}"
+col1.metric("처리 전 행 수", f"{original_count:,}")
+col2.metric("처리 후 행 수", f"{used_count:,}")
+col3.metric("제외한 행 수", f"{removed_count:,}")
+st.caption(
+    f"원본 데이터: {original_shape[0]:,}행 × {original_shape[1]}열 · "
+    f"분석 입력: {used_count:,}행 × {len(selected_features)}개 변수. "
+    "표의 결측치 수는 셀 개수이므로 합계가 제외 행 수와 다를 수 있습니다. "
+    "분석 변수 선택에 따라 제외 행 수가 달라집니다."
 )
-
-col2.metric(
-    "분석 사용",
-    f"{used_count:,}"
-)
-
-col3.metric(
-    "제외",
-    f"{removed_count:,}"
-)
-
 
 if used_count < k:
-
-    st.error(
-        "분석 가능한 데이터 수보다 K가 큽니다."
-    )
-
+    st.error("결측치 처리 후 분석 가능한 데이터 수보다 K가 큽니다. 변수나 K를 조정하세요.")
     st.stop()
 
 
