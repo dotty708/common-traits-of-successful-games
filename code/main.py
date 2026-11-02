@@ -37,7 +37,7 @@ DATA_URL = (
 )
 
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def load_data():
     return pd.read_csv(DATA_URL, encoding="utf-8")
 
@@ -56,6 +56,13 @@ except Exception as e:
 # 2. estimated_owners → 구간 중간값 변환
 # =========================================================
 
+source_shape = df.shape
+no_review_mask = (
+    pd.to_numeric(df["positive"], errors="coerce").eq(0)
+    & pd.to_numeric(df["negative"], errors="coerce").eq(0)
+)
+review_rows_removed = int(no_review_mask.sum())
+df = df.loc[~no_review_mask].copy()
 raw_df = df.copy()
 df = df.copy().replace(r"^\s*$", np.nan, regex=True)
 original_shape = df.shape
@@ -107,25 +114,20 @@ if "estimated_owners" in df.columns:
 
 st.header("1. 데이터 정보")
 
-st.subheader("사전 데이터 정리 기록")
-st.write("긍정 리뷰(positive)와 부정 리뷰(negative)가 모두 0인 행만 CSV에서 삭제했습니다. 무료 게임이나 둘 중 하나만 0인 게임은 이 조건으로 삭제하지 않았습니다.")
+st.subheader("리뷰 없는 게임 제외 결과")
+st.write("현재 불러온 데이터에서 긍정 리뷰와 부정 리뷰가 모두 0인 행만 제외합니다. 무료 가격 0원은 삭제 조건이 아닙니다. 이미 정리된 CSV라면 추가 제외 행 수는 0입니다.")
 st.dataframe(pd.DataFrame([{
-    "단계": "CSV 사전 정리(제공받은 원본 기준)",
-    "처리 전 행 수": 73965,
-    "삭제 행 수": 1402,
-    "저장한 행 수": 72563,
-    "열 수": 18,
+    "단계": "현재 CSV에 리뷰 조건 적용",
+    "처리 전 행 수": source_shape[0],
+    "제외 행 수": review_rows_removed,
+    "처리 후 행 수": original_shape[0],
+    "열 수": original_shape[1],
 }]), use_container_width=True, hide_index=True)
-st.caption("위 수치는 이 대화에서 확인하고 저장한 CSV의 처리 기록입니다. 아래 개요와 분석 수치는 현재 GitHub에서 읽은 파일로 매번 계산합니다.")
-if original_shape != (72563, 18):
-    st.warning("현재 파일 크기가 저장 당시 기록과 다릅니다. 아래 현재 파일 기준 수치를 확인하세요.")
-remaining_no_reviews = (
-    pd.to_numeric(df["positive"], errors="coerce").eq(0)
-    & pd.to_numeric(df["negative"], errors="coerce").eq(0)
-).sum()
-if remaining_no_reviews:
-    st.warning(f"현재 파일에 긍정·부정 리뷰가 모두 0인 행이 {remaining_no_reviews:,}개 남아 있습니다. 업로드한 CSV를 확인하세요.")
-st.subheader("현재 불러온 CSV 개요")
+st.caption(f"입력 파일: {DATA_URL}")
+if st.button("GitHub 데이터 새로 불러오기"):
+    load_data.clear()
+    st.rerun()
+st.subheader("리뷰 조건 적용 후 데이터 개요")
 
 
 col1, col2, col3 = st.columns(3)
