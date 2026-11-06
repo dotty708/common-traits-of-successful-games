@@ -2,3 +2,6 @@
 리뷰는 positive와 negative만 쓰고, 비율은 직접 계산하거나 아예 positive 총합으로 단순화합니다.
 estimated_owners는 구간의 중앙값으로 변환하고, peak_ccu, positive, negative는 log1p를 적용합니다.
 예측용 특성에서는 windows와 required_age를 빼고 developers와 publishers는 상위 N개로 묶습니다.
+
+(11.04 수정)
+군집화 모델에서 사용할 값을 positive 및 negative 값의 합으로 결정 결측치는 두개의 값이 전부 0이거나, -1인 값을 제외함.
