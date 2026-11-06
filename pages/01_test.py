@@ -1,68 +1,52 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
-import lightgbm as lgb
-
-# 1. 데이터 로드 (실제 데이터셋 경로 지정)
-# df = pd.read_csv("game_cluster_data.csv")
+from sklearn.dummy import DummyClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, recall_score, classification_report
 
 # -------------------------------------------------------------
-# [예시용 샘플 데이터생성 구조]
-# Target: 군집 (0, 1, 2)
-# Features: 게임 속성 (예: 장르, 플랫폼, 출시가격, 리뷰수, 개발기간 등)
+# 1. 예시용 데이터 분할 (실제 X, y 데이터 대입)
 # -------------------------------------------------------------
-
-# X: 예측에 사용할 피처(게임 요소 데이터), y: 타겟 군집 (0, 1, 2)
-# X = df.drop(columns=['cluster'])
-# y = df['cluster']
-
-# 2. Train / Test 데이터 분할 (클래스 비율 유지를 위해 stratify 사용)
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
-
-print(f"학습 데이터 수: {len(X_train)}, 평가 데이터 수: {len(X_test)}")
+# X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
 # -------------------------------------------------------------
-# 모델 1: Random Forest (기본 베이스라인)
+# 2. 최빈값 기반 Dummy Classifier (가장 기초적인 베이스라인)
 # -------------------------------------------------------------
-rf_model = RandomForestClassifier(
-    n_estimators=100, 
-    random_state=42, 
-    n_jobs=-1
-)
-rf_model.fit(X_train, y_train)
-rf_pred = rf_model.predict(X_test)
+# most_frequent: 무조건 가장 수가 많은 '군집 1'로만 예측
+dummy_model = DummyClassifier(strategy='most_frequent')
+dummy_model.fit(X_train, y_train)
+dummy_pred = dummy_model.predict(X_test)
 
-print("=== Random Forest 결과 ===")
-print(f"Accuracy: {accuracy_score(y_test, rf_pred):.4f}")
-print(classification_report(y_test, rf_pred))
+dummy_acc = accuracy_score(y_test, dummy_pred)
+# 다중 클래스이므로 recall_score에 average 옵션 지정 ('macro' 또는 'weighted')
+dummy_recall_macro = recall_score(y_test, dummy_pred, average='macro')
+dummy_recall_per_class = recall_score(y_test, dummy_pred, average=None)
 
-# -------------------------------------------------------------
-# 모델 2: LightGBM (고성능 베이스라인)
-# -------------------------------------------------------------
-lgb_model = lgb.LGBMClassifier(
-    objective='multiclass',
-    num_class=3,
-    random_state=42,
-    n_estimators=100
-)
-lgb_model.fit(X_train, y_train)
-lgb_pred = lgb_model.predict(X_test)
-
-print("=== LightGBM 결과 ===")
-print(f"Accuracy: {accuracy_score(y_test, lgb_pred):.4f}")
-print(classification_report(y_test, lgb_pred))
+print("=" * 40)
+print("[베이스라인 1] 최빈값 예측 모델 (Dummy Classifier)")
+print(f"• 정확도 (Accuracy)  : {dummy_acc:.4f}")
+print(f"• 평균 재현율 (Macro Recall): {dummy_recall_macro:.4f}")
+print(f"• 클래스별 재현율 (Recall)  : 군집0={dummy_recall_per_class[0]:.4f}, 군집1={dummy_recall_per_class[1]:.4f}, 군집2={dummy_recall_per_class[2]:.4f}")
 
 # -------------------------------------------------------------
-# 3. 주요 영향 변수(Feature Importance) 확인
+# 3. 로지스틱 회귀 (단순 머신러닝 베이스라인)
 # -------------------------------------------------------------
-import matplotlib.pyplot as plt
+lr_model = LogisticRegression(max_iter=1000, random_state=42)
+lr_model.fit(X_train, y_train)
+lr_pred = lr_model.predict(X_test)
 
-feature_importances = pd.Series(lgb_model.feature_importances_, index=X.columns)
-feature_importances.nlargest(10).plot(kind='barh')
-plt.title('Top 10 Feature Importances (LightGBM)')
-plt.xlabel('Importance Score')
-plt.show()
+lr_acc = accuracy_score(y_test, lr_pred)
+lr_recall_macro = recall_score(y_test, lr_pred, average='macro')
+lr_recall_per_class = recall_score(y_test, lr_pred, average=None)
+
+print("\n" + "=" * 40)
+print("[베이스라인 2] 로지스틱 회귀 모델 (Logistic Regression)")
+print(f"• 정확도 (Accuracy)  : {lr_acc:.4f}")
+print(f"• 평균 재현율 (Macro Recall): {lr_recall_macro:.4f}")
+print(f"• 클래스별 재현율 (Recall)  : 군집0={lr_recall_per_class[0]:.4f}, 군집1={lr_recall_per_class[1]:.4f}, 군집2={lr_recall_per_class[2]:.4f}")
+print("=" * 40)
+
+# 상세 정밀도/재현율/F1-score 리포트 출력
+print("\n[Logistic Regression 상세 분류 리포트]")
+print(classification_report(y_test, lr_pred, target_names=['군집 0', '군집 1', '군집 2']))
