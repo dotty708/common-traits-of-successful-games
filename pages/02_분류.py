@@ -1510,6 +1510,331 @@ else:
 # 19. 실제 게임 예측 사례
 # ==================================================
 
+# ==================================================
+# 18-1. 게임별 오분류 원인 분석
+# ==================================================
+
+st.subheader("9-1. 게임별 오분류 원인 분석")
+
+st.caption(
+    "게임을 선택하면 모델이 어떤 입력 변수에 "
+    "민감하게 반응했는지 분석합니다."
+)
+
+if wrong.empty:
+
+    st.info("분석할 오분류 게임이 없습니다.")
+
+elif view_model == "베이스라인":
+
+    st.info(
+        "베이스라인은 게임의 개별 특성을 사용하지 않고 "
+        "학습 데이터에서 가장 많은 군집만 예측합니다. "
+        "따라서 실제 군집이 최빈 군집과 다르면 오분류됩니다."
+    )
+
+    st.write(
+        "학습 데이터의 군집 분포:",
+        result["train_class_counts"]
+    )
+
+else:
+
+    # 1. 오분류 게임 선택
+    selected_index = st.selectbox(
+        "오분류 원인을 확인할 게임",
+        options=wrong.index.tolist(),
+        format_func=lambda i: (
+            f"{wrong.at[i, 'name'] if 'name' in wrong.columns else '게임'} "
+            f"(AppID: {int(wrong.at[i, 'appid'])}) "
+            f"| 실제 {int(wrong.at[i, '실제 군집'])} "
+            f"→ 예측 {int(wrong.at[i, '예측 군집'])}"
+        )
+    )
+
+    selected_game = wrong.loc[selected_index]
+
+    game_id = int(selected_game["appid"])
+    actual = int(selected_game["실제 군집"])
+    predicted = int(selected_game["예측 군집"])
+
+    model = result["models"][view_model]
+    features = result["selected_features"]
+    top_values = result["top_values"]
+
+    game_data = df.loc[
+        df["appid"] == game_id,
+        features
+    ].head(1).copy()
+
+    if game_data.empty:
+
+        st.warning("게임의 입력 데이터를 찾을 수 없습니다.")
+
+    else:
+
+        # 2. 원래 예측 확률 계산
+        encoded = make_feature_dicts(
+            game_data,
+            features,
+            top_values
+        )
+
+        original_probs = model.predict_proba(encoded)[0]
+
+        classes = [
+            int(c)
+            for c in model.named_steps[
+                "classifier"
+            ].classes_
+        ]
+
+        probability = dict(
+            zip(classes, original_probs)
+        )
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.metric("실제 군집", f"군집 {actual}")
+        c2.metric("예측 군집", f"군집 {predicted}")
+        c3.metric(
+            "잘못 예측한 군집의 확률",
+            f"{probability[predicted]:.1%}"
+        )
+
+        st.markdown("**군집별 예측 확률**")
+
+        prob_df = pd.DataFrame({
+            "군집": [
+                f"군집 {c}" for c in classes
+            ],
+            "예측 확률(%)": [
+                probability[c] * 100
+                for c in classes
+            ]
+        })
+
+        fig_prob = px.bar(
+            prob_df,
+            x="군집",
+            y="예측 확률(%)",
+            text_auto=".2f",
+            range_y=[0, 100],
+            title="모델의 군집별 예측 확률"
+        )
+
+        st.plotly_chart(
+            fig_prob,
+            use_container_width=True
+        )
+
+        # 3. 실제 군집의 리뷰 기반 특성
+        if {"positive", "negative"}.issubset(df.columns):
+
+            game_record = df.loc[
+                df["appid"] == game_id
+            ].iloc[0]
+
+            medians = df.groupby("cluster")[
+                ["positive", "negative"]
+            ].median()
+
+            comparison = pd.DataFrame([
+                {
+                    "구분": "선택한 게임",
+                    "긍정 리뷰": game_record["positive"],
+                    "부정 리뷰": game_record["negative"]
+                },
+                {
+                    "구분": f"실제 군집 {actual} 중앙값",
+                    "긍정 리뷰": medians.loc[actual, "positive"],
+                    "부정 리뷰": medians.loc[actual, "negative"]
+                },
+                {
+                    "구분": f"예측 군집 {predicted} 중앙값",
+                    "긍정 리뷰": medians.loc[predicted, "positive"],
+                    "부정 리뷰": medians.loc[predicted, "negative"]
+                }
+            ])
+
+            st.markdown("**실제 군집과 리뷰 특성 비교**")
+
+            st.dataframe(
+                comparison,
+                hide_index=True,
+                use_container_width=True
+            )
+
+        # 4. 입력 변수별 민감도 분석
+        st.markdown("**입력 변수별 오분류 영향 분석**")
+
+        st.write(
+            "입력 변수를 하나씩 기준값으로 변경하고, "
+            "잘못 예측한 군집의 확률이 얼마나 "
+            "달라지는지 비교합니다."
+        )
+
+        numeric_features = {
+            "price",
+            "release_year",
+            "release_month"
+        }
+
+        impact_rows = []
+
+        for feature in features:
+
+            original_value = game_data.iloc[0][feature]
+
+            # 숫자형: 전체 데이터 중앙값으로 변경
+            if feature in numeric_features:
+
+                series = pd.to_numeric(
+                    df[feature],
+                    errors="coerce"
+                ).replace(
+                    [np.inf, -np.inf],
+                    np.nan
+                )
+
+                reference = series.median()
+
+                if pd.isna(reference):
+                    reference = 0.0
+
+                reference = float(reference)
+                reference_text = f"{reference:g} (중앙값)"
+
+            # 범주형: 정보 없음으로 변경
+            else:
+
+                reference = np.nan
+                reference_text = "정보 없음"
+
+            changed = game_data.copy().astype(object)
+
+            changed.at[
+                changed.index[0],
+                feature
+            ] = reference
+
+            changed_encoded = make_feature_dicts(
+                changed,
+                features,
+                top_values
+            )
+
+            changed_probs = model.predict_proba(
+                changed_encoded
+            )[0]
+
+            changed_probability = dict(
+                zip(classes, changed_probs)
+            )
+
+            # 양수: 원래 값이 오예측 확률을 높이는 방향
+            wrong_delta = (
+                probability[predicted]
+                - changed_probability[predicted]
+            ) * 100
+
+            # 양수: 기준값 변경 시 실제 군집 확률 상승
+            actual_delta = (
+                changed_probability[actual]
+                - probability[actual]
+            ) * 100
+
+            impact_rows.append({
+                "입력 변수": feature,
+                "현재 값": str(original_value),
+                "비교 기준": reference_text,
+                "오예측 확률 영향(pp)": wrong_delta,
+                "실제 군집 확률 변화(pp)": actual_delta,
+                "변경 후 예측": (
+                    f"군집 {classes[int(np.argmax(changed_probs))]}"
+                )
+            })
+
+        impact_df = pd.DataFrame(impact_rows)
+
+        impact_df = impact_df.reindex(
+            impact_df[
+                "오예측 확률 영향(pp)"
+            ].abs().sort_values(
+                ascending=False
+            ).index
+        ).reset_index(drop=True)
+
+        st.dataframe(
+            impact_df.style.format({
+                "오예측 확률 영향(pp)": "{:+.2f}",
+                "실제 군집 확률 변화(pp)": "{:+.2f}"
+            }),
+            hide_index=True,
+            use_container_width=True
+        )
+
+        fig_impact = px.bar(
+            impact_df,
+            x="입력 변수",
+            y="오예측 확률 영향(pp)",
+            title="입력 변수별 예측 확률 민감도",
+            labels={
+                "오예측 확률 영향(pp)":
+                    "확률 변화 (퍼센트포인트)"
+            }
+        )
+
+        st.plotly_chart(
+            fig_impact,
+            use_container_width=True
+        )
+
+        # 5. 자동 분석 문장
+        supporting = impact_df[
+            impact_df["오예측 확률 영향(pp)"] > 0.05
+        ].sort_values(
+            "오예측 확률 영향(pp)",
+            ascending=False
+        )
+
+        st.markdown("**오분류 원인 해석**")
+
+        if not supporting.empty:
+
+            top = supporting.iloc[0]
+
+            st.write(
+                f"이 게임은 실제로 군집 {actual}에 속하지만 "
+                f"{view_model} 모델은 군집 {predicted}으로 "
+                f"예측했습니다."
+            )
+
+            st.write(
+                f"입력 변수 중 **{top['입력 변수']}**의 "
+                f"현재 값({top['현재 값']})이 "
+                "잘못된 군집의 예측 확률을 "
+                f"비교 기준 대비 약 "
+                f"**{top['오예측 확률 영향(pp)']:.2f}"
+                "퍼센트포인트** 높이는 방향으로 "
+                "작용했습니다."
+            )
+
+        else:
+
+            st.write(
+                "입력 변수를 하나씩 기준값으로 변경해도 "
+                "오예측 확률을 뚜렷하게 낮추는 "
+                "변수를 찾지 못했습니다."
+            )
+
+        st.caption(
+            "양수는 현재 입력값이 잘못 예측한 군집의 "
+            "확률을 기준값보다 높였다는 뜻입니다. "
+            "이 분석은 변수별 민감도를 보여주며, "
+            "오분류의 인과적 원인을 확정하지는 않습니다."
+        )
+
 st.header("10. 실제 게임 예측 사례")
 
 correct = examples[
