@@ -285,6 +285,8 @@ df.drop(
 df["cluster_name"] = (
     "군집 " + df["cluster"].astype(str)
 )
+# 군집화 결과를 다른 페이지에 자동 전달
+st.session_state["steam_clustered_df"] = df.copy()
 
 st.success(
     f"{len(df):,}개 게임을 "
