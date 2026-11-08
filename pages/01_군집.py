@@ -151,6 +151,174 @@ if len(df) < K:
 
 
 # ==================================================
+# 구술 평가용 데이터 탐색 및 전처리 요약
+# ==================================================
+
+st.header("데이터 탐색 및 전처리 분석")
+
+# 1. 원본 데이터 개요
+st.subheader("원본 데이터 개요")
+
+a, b = st.columns(2)
+a.metric("원본 행 수", f"{raw_df.shape[0]:,}")
+b.metric("원본 열 수", f"{raw_df.shape[1]:,}")
+
+missing = raw_df.isna().sum().astype(int)
+
+for col in raw_df.select_dtypes(
+    include=["object", "string"]
+).columns:
+    blank = (
+        raw_df[col]
+        .str.fullmatch(r"\s*")
+        .fillna(False)
+        .sum()
+    )
+    missing[col] += int(blank)
+
+column_info = pd.DataFrame({
+    "열 이름": raw_df.columns,
+    "자료형": [str(x) for x in raw_df.dtypes],
+    "결측치 수": [
+        int(missing[col]) for col in raw_df.columns
+    ],
+})
+
+column_info["결측 비율(%)"] = (
+    column_info["결측치 수"]
+    / max(len(raw_df), 1) * 100
+).round(2)
+
+st.dataframe(
+    column_info,
+    use_container_width=True,
+    hide_index=True
+)
+
+st.caption(
+    "NaN과 빈 문자열을 결측치로 집계했습니다. "
+    "0은 자동으로 결측치로 처리하지 않습니다."
+)
+
+# 2. 전처리 전후 비교
+st.subheader("전처리 전후 데이터 비교")
+
+comparison = pd.DataFrame([
+    {
+        "단계": "원본",
+        "행 수": len(raw_df),
+        "열 수": raw_df.shape[1]
+    },
+    {
+        "단계": "비정상 리뷰 값 제거 후",
+        "행 수": len(raw_df) - int(invalid_mask.sum()),
+        "열 수": raw_df.shape[1]
+    },
+    {
+        "단계": "리뷰 0건 게임 제외 후",
+        "행 수": len(df),
+        "열 수": df.shape[1]
+    }
+])
+
+st.dataframe(
+    comparison,
+    use_container_width=True,
+    hide_index=True
+)
+
+removed = len(raw_df) - len(df)
+
+st.write(
+    f"**전처리 결과:** 총 {removed:,}개 게임 제외 "
+    f"({removed / max(len(raw_df), 1) * 100:.2f}%)"
+)
+
+st.caption(
+    "최종 열 수에는 total_reviews와 positive_rate "
+    "파생 변수 2개가 포함됩니다. "
+    "리뷰가 많은 게임의 극단값은 삭제하지 않고 "
+    "이후 log1p 변환으로 규모 차이를 완화합니다."
+)
+
+# 3. 분포 그래프 및 수치 인사이트
+st.subheader("인기 지표의 분포와 인사이트")
+
+def show_distribution(column, title, axis_label):
+
+    values = pd.to_numeric(
+        df[column], errors="coerce"
+    )
+
+    values = values[
+        np.isfinite(values) & (values >= 0)
+    ]
+
+    if values.empty:
+        st.warning(f"{title}: 유효한 데이터가 없습니다.")
+        return
+
+    log_values = np.log1p(values.to_numpy())
+
+    counts, edges = np.histogram(
+        log_values, bins=45
+    )
+
+    chart_df = pd.DataFrame({
+        axis_label: (edges[:-1] + edges[1:]) / 2,
+        "게임 수": counts
+    })
+
+    fig = px.bar(
+        chart_df,
+        x=axis_label,
+        y="게임 수",
+        title=title,
+        labels={"게임 수": "게임 수"}
+    )
+
+    fig.update_layout(bargap=0.03)
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
+
+    median = values.median()
+    p90 = values.quantile(0.9)
+    maximum = values.max()
+
+    st.markdown(
+        f"**발견 및 근거:** 유효 게임 "
+        f"{len(values):,}개의 중앙값은 "
+        f"**{median:,.0f}**, 90백분위수는 "
+        f"**{p90:,.0f}**, 최댓값은 "
+        f"**{maximum:,.0f}**입니다."
+    )
+
+    if median > 0:
+        st.caption(
+            f"90백분위수가 중앙값의 "
+            f"{p90 / median:.1f}배입니다. "
+            "이 차이로 데이터의 쏠림 정도를 "
+            "확인할 수 있습니다."
+        )
+
+
+show_distribution(
+    "total_reviews",
+    "그래프 1. 게임별 전체 리뷰 수 분포",
+    "log1p(전체 리뷰 수)"
+)
+
+if "peak_ccu" in df.columns:
+    show_distribution(
+        "peak_ccu",
+        "그래프 2. 최대 동시 접속자 수 분포",
+        "log1p(최대 동시 접속자 수)"
+    )
+
+# ==================================================
 # 3. 군집화 설정
 # ==================================================
 
