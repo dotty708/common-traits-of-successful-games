@@ -1,4 +1,5 @@
 # common-traits-of-successful-games
+https://common-traits-of-successful-games.streamlit.app/
 ## 팀원
 - 20110 류정현 / 20628최홍란
 ## 질문
