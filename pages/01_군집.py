@@ -29,7 +29,7 @@ DATA_URL = (
     "https://raw.githubusercontent.com/"
     "dotty708/common-traits-of-successful-games/"
     "refs/heads/main/data/"
-    "games_march2025_popularity_filtered.csv"
+    "games_popularity_with_pre_release_features.csv"
 )
 
 FEATURES = ["positive", "negative"]
